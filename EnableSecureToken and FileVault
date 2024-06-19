@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# Created and wrriten by Jaykrishna Kumar
+
+# Get the current user logged into the console session
+currentUser=$(stat -f%Su /dev/console)
+
+# Admin credentials passed through Jamf Pro parameters
+adminUser1="$4"
+adminPwd1="$5"
+adminUser2="$6"
+adminPwd2="$7"
+
+# Function to check secure token status
+check_secure_token_status() {
+    local user="$1"
+    sysadminctl -secureTokenStatus "$user" 2>&1 | grep -q "ENABLED"
+}
+
+# Function to prompt for user password
+prompt_user_password() {
+    osascript << EOF
+text returned of (display dialog "Enabling secure token for $currentUser. Please enter your current login password." with title "Marvell IT" with icon caution default answer "" buttons {"OK"} default button 1 with hidden answer)
+EOF
+}
+
+# Validate user password
+validate_password() {
+    local user="$1"
+    local password="$2"
+    dscl /Local/Default -authonly "$user" "$password" &>/dev/null
+}
+
+# Enable secure token using specified admin credentials
+enable_secure_token() {
+    local adminUser="$1"
+    local adminPwd="$2"
+    sysadminctl -adminUser "$adminUser" -adminPassword "$adminPwd" -secureTokenOn "$currentUser" -password "$userPwd"
+}
+
+# Prompt user for their password and validate it
+while true; do
+    userPwd=$(prompt_user_password)
+    if validate_password "$currentUser" "$userPwd"; then
+        break
+    else
+        osascript -e 'display dialog "The password entered is incorrect. Please try again." buttons {"OK"} default button 1'
+    fi
+done
+
+echo "Attempting to enable secure token for $currentUser"
+
+# Attempt to enable secure token with the first admin user
+enable_secure_token "$adminUser1" "$adminPwd1"
+if check_secure_token_status "$currentUser"; then
+    echo "Secure token successfully enabled for $currentUser with first admin user"
+else
+    echo "First admin user failed, trying with second admin user"
+    enable_secure_token "$adminUser2" "$adminPwd2"
+    if check_secure_token_status "$currentUser"; then
+        echo "Secure token successfully enabled for $currentUser with second admin user"
+    else
+        echo "Failed to enable secure token for $currentUser with both admin users"
+        exit 1
+    fi
+fi
+
+# Check if FileVault is enabled
+fileVaultStatus=$(fdesetup status | grep -o "FileVault is On.")
+
+if [ "$fileVaultStatus" == "FileVault is On." ]; then
+    echo "FileVault is already enabled"
+else
+    echo "Enabling FileVault"
+    echo "$userPwd" | sudo fdesetup enable -user "$currentUser"
+    if [ $? -eq 0 ]; then
+        echo "FileVault has been enabled"
+    else
+        echo "Failed to enable FileVault"
+        exit 1
+    fi
+fi
+
+exit 0
